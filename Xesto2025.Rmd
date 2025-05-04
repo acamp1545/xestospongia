@@ -1,0 +1,203 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+1. Install packages and dependencies.
+
+```{r}
+install.packages("ape")
+install.packages("Hmisc")
+install.packages("yaml")
+install.packages("tidyr")
+install.packages("dplyr")
+install.packages("stats")
+install.packages("utils")
+install.packages("vegan")
+install.packages("ggplot2")
+install.packages("magrittr")
+
+library(ape)
+library(Hmisc)
+library(yaml)
+library(tidyr)
+library(dplyr)
+library(stats)
+library(utils)
+library(vegan)
+library(ggplot2)
+library(magrittr)
+```
+
+```{r}
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("Biostrings",force=TRUE)
+library(Biostrings)
+```
+
+```{r}
+if (!requireNamespace("BiocManager", quietly=TRUE))
+    install.packages("BiocManager")
+BiocManager::install("biomformat",force=TRUE)
+library(biomformat)
+```
+
+
+```{r}
+#I did a local install from source onto my computer. You may not need this.
+library("phyloseq")
+```
+
+```{r}
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("multtest",force=TRUE)
+library(multtest)
+```
+
+
+```{r}
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("DESeq2",force=TRUE)
+library(DESeq2)
+```
+
+```{r}
+if (!requireNamespace("devtools", quietly = TRUE)){install.packages("devtools")}
+devtools::install_github("jbisanz/qiime2R",force=TRUE)
+library(qiime2R)
+```
+
+2. Import data files and check integrity
+
+```{r}
+list.files()
+ASVs<-read_qza("xesto_reads/denoise/rel_freq_table.qza")
+names(ASVs)
+ASVs$data[1:5,1:5]
+ASVs$type
+```
+
+
+```{r}
+library(readr)
+metadata <- read_delim("~/Desktop/Xesto2025/metadata.tsv", 
+     delim = "\t", escape_double = FALSE, 
+     trim_ws = TRUE,show_col_types = FALSE)
+head(metadata)
+meta<-as.matrix(metadata)
+```
+
+
+```{r}
+taxonomy<-read_qza("xesto_reads/xesto_454_taxonomy.qza") 
+head(taxonomy$data)
+taxonomy<-parse_taxonomy(taxonomy$data)
+head(taxonomy)
+```
+
+```{r}
+tree<-read_qza("xesto_reads/rooted-tree.qza")
+TREE<-as.phylo(tree$data)
+```
+
+
+```{r}
+asv_table_num <- data.matrix(ASVs$data, rownames.force = NA)
+tax<-as.matrix(taxonomy)
+```
+
+```{r}
+phy1<-qza_to_phyloseq(
+    features="xesto_reads/denoise/rel_freq_table.qza",
+    tree="xesto_reads/rooted-tree.qza",
+    taxonomy="xesto_reads/xesto_454_taxonomy.qza",
+    metadata = "metadata.tsv"
+    )
+phy1
+
+phydf<-psmelt(phy1)
+head(phydf)
+
+otu_wide <- phydf %>%
+  select(Alias, OTU, Abundance, Type) %>%
+  spread(key = OTU, value = Abundance, fill = 0)  # Fill missing values with 0
+write.csv(otu_wide, "otu_table_wide.csv", row.names = FALSE)
+```
+
+```{r}
+library(reticulate)
+py_require("pandas")
+py_require("numpy")
+py_require("matplotlib")
+py_require("scikit-learn")
+```
+
+
+
+```{python}
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
+
+# Load the reshaped OTU table
+otu_data = pd.read_csv("otu_table_wide.csv")
+print(otu_data.head())
+```
+
+```{python}
+# Drop sample identifier
+X = otu_data.drop(columns=['Alias', 'Type'])
+
+# Encode Type (disease state)
+label_encoder = LabelEncoder()
+y = label_encoder.fit_transform(otu_data['Type'])
+
+from sklearn.feature_selection import VarianceThreshold
+
+selector = VarianceThreshold(threshold=0.01)  # Adjust threshold based on data
+X_train_reduced = selector.fit_transform(X_train)
+X_test_reduced = selector.transform(X_test)
+
+# Standardize features (optional but helps)
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+# Split into train and test sets (80% train, 20% test)-nonstratified
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+rf_model = RandomForestClassifier(
+    n_estimators=1000,  # Number of trees
+    max_depth=10,  # Maximum depth of each tree
+    random_state=42,
+    class_weight="balanced",  # Handles class imbalance
+    n_jobs=-1  # Use all available cores
+)
+
+rf_model.fit(X_train, y_train)
+
+# Predict on test set
+y_pred = rf_model.predict(X_test)
+
+
+accuracy = accuracy_score(y_test, y_pred)
+print(f'Random Forest Accuracy: {accuracy:.4f}')
+
+print("Classification Report:")
+print(classification_report(y_test, y_pred, target_names=label_encoder.classes_))
+
+# Confusion Matrix
+print("Confusion Matrix:")
+print(confusion_matrix(y_test, y_pred))
+
+```
+
