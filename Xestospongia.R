@@ -1,157 +1,260 @@
+if (!require("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+
+BiocManager::install("phyloseq")
+
 library(phyloseq)
 library(tidyr)
 library(dplyr)
 library(ggplot2)
+library(vegan)
+install.packages("compositions")
+library(compositions)
+library(devtools)
+#Install qiime2r with github source code tarfile.
+library(qiime2R)
 
+setwd("/Users/alexandracampbell/Desktop/Xesto2025/xesto_reads")
 
-#Make the phyloseq object
-map_file <- read.csv("~/Desktop/Xesto2025/xesto_reads/xesto454_metadata_new.csv", row.names=NULL, stringsAsFactors=TRUE)
-# Specify which column contains the sample names (assuming it's named 'SampleID' in the map file)
-rownames(map_file) <- map_file$SampleID  # Replace 'SampleID' with the actual column name in your map file
-#map_file$SampleID <- NULL  # Optionally remove the 'SampleID' column if it's no longer needed
-sample_data_ps <- sample_data(map_file)  # This now uses the 'SampleID' column as the row names
+list.files()
+ASVs<-read_qza("denoise/table.qza")
+names(ASVs)
+ASVs$data[1:5,1:5]
+ASVs$type
+ASVs<-ASVs$data
+colnames(ASVs) <- gsub("\\.fastq.*$", "", colnames(ASVs))
 
+metadata <- read.csv("xesto454_metadata_new.csv", row.names = "SampleID", stringsAsFactors = FALSE)
+head(row.names(metadata))
 
+taxonomy<-read_qza("xesto_454_taxonomy.qza") 
+head(taxonomy$data)
+taxonomy<-parse_taxonomy(taxonomy$data)
+head(taxonomy)
 
-library(readr)
-asv <- read_csv("asv.csv")
+root_tree<-read_qza("rooted-tree.qza")
+tree<- root_tree$data
+plot(tree)
 
+OTU <- otu_table(as.matrix(ASVs), taxa_are_rows = TRUE)
+TAX <- tax_table(as.matrix(taxonomy))
+MAP <- sample_data(metadata)
 
-data <- read_csv("data.csv")
-data <- as.data.frame(data)
-asv <- as.data.frame(asv)
-asv[] <- lapply(asv, as.numeric)
-asv[is.na(asv)] <- 0
-asv_ps <- otu_table(asv, taxa_are_rows = TRUE)
-
-tax_ps <- tax_table(as.matrix(data))
-
-ps <- phyloseq(tax_ps,asv_ps)
-ps
-ps1 = merge_phyloseq(ps,sample_data_ps)
-ps1
-
-
-#CSS normalization
-if (!require("BiocManager", quietly = TRUE))
-  install.packages("BiocManager")
-
-BiocManager::install("metagenomeSeq")
-a
-BiocManager::install(c("GenomicFeatures", "AnnotationDbi"))
-
-library(metagenomeSeq)
-
-sum(taxa_sums(ps1) == 0) #Calculate current number of zeros in data
-ps1 <- filter_taxa(ps1, function(x) sum(x) != 0, TRUE) #Filters zeros from data
-sum(taxa_sums(ps1) == 0) #Recalculates number of zeros
+sample_names(OTU)[1:5]
+sample_names(MAP)[1:5]
 
 
 
+physeq_object <- phyloseq(OTU, TAX, MAP,tree)
+
+# Handle zeros before CLR transformation (e.g., add a pseudocount)
+# A common approach is to add a small pseudocount (e.g., 1) to all counts
+physeq_obj_clr <- transform_sample_counts(physeq_object, function(x) x + 1)
+
+# Perform CLR transformation
+# Note: clr() function from 'compositions' package expects samples in rows
+otu_clr <- t(otu_table(physeq_obj_clr)) # Transpose to have samples in rows
+otu_clr_transformed <- clr(otu_clr)
+
+# Convert back to phyloseq otu_table format (taxa in rows)
+OTU_clr <- otu_table(t(otu_clr_transformed), taxa_are_rows = TRUE)
+physeq_obj_clr_final <- phyloseq(OTU_clr, TAX, MAP)
 
 
 
-sort(sample_sums(ps1))
-ps1s = subset_samples(ps1, SampleID != "5_11_Soil") #Filtering out to fix counts
-ps1s = subset_samples(ps1s, SampleID != "5_29_Soil") #Filtering out to fix counts
-ps1s = subset_samples(ps1s, SampleID != "5_11_Water") #Filtering out to fix counts
-ps1s
-sort(sample_sums(ps1s))
-MX <- phyloseq_to_metagenomeSeq(ps1s)
-MX
+dist_matrix <- phyloseq::distance(physeq_obj_clr_final, method = "euclidean")
 
-p <- cumNormStatFast(MX) #Normalization (Cumulative Sums)
-p
-MX<-cumNorm(MX,p=p)
+# --- 3. Constrained Analysis of Principal Coordinates (CAP) Ordination ---
 
-normFactors(MX) #Returns normalization factors
-normmybiom<-MRcounts(MX,norm=T)
+# Define the constraining variable from your map file (e.g., 'Group')
+# Replace 'Group' with the actual column name in your map file
+constraining_variable <- "DiseaseState" 
 
-exportMat(normmybiom, file = "Xest_CSS_norm.txt", sep = "\t")
-b <- MRexperiment2biom(MX, norm = T)
+cap_ordination <- capscale(dist_matrix ~ DiseaseState,data = metadata)
 
-library(biomformat)
-write_biom(b, biom_file = "Xesto_CSS_norm.biom")
-library(RCurl)
-import_biom2_script <- getURL("https://gist.githubusercontent.com/jnpaulson/324ac1fa3eab1bc7f845/raw/2ef62334d4e9bc5446a5ee6dd198f52484097dae/import_biom2.R", ssl.verifypeer = FALSE)
-eval(parse(text = import_biom2_script))
+#plot setup
+site_scores <- scores(cap_ordination, display = "sites")
+site_df <- as.data.frame(site_scores)
+site_df$SampleID <- rownames(site_df)
+site_df <- cbind(site_df, metadata[rownames(site_df), , drop = FALSE])
 
-biom <- read_biom("Xesto_CSS_norm.biom")
-biom2 <- import_biom2(biom)
-sort(sample_sums(biom2))
+# Plot
+ggplot(site_df, aes(x = CAP1, y = CAP2, color = DiseaseState)) +
+  geom_point(size = 3) +
+  theme_minimal() +
+  labs(title = "CAP Ordination", x = "CAP1", y = "CAP2") +
+  theme(plot.title = element_text(hjust = 0.5))
 
-sort(sample_sums(ps1s))
-norm_ps<-merge_phyloseq(biom2,sample_data_ps,tax_ps)
-norm_ps
+#SIMPER Analysis
+otu_simper <- t(otu_table(physeq_obj_clr_final))
+grouping_factor <- sample_data(physeq_obj_clr_final)[[constraining_variable]]
 
-#Here, we will calculate the gap statistic (need for eventual k-means evaluation). Below is an add-on script
-library("cluster")
-theme_set(theme_bw())
-exord = ordinate(ps1, method="MDS", distance="jsd")
-pam1 = function(x, k){list(cluster = pam(x,k, cluster.only=TRUE))}
-x = phyloseq:::scores.pcoa(exord, display="sites")
-gskmn = clusGap(x[, 1:2], FUN=kmeans, nstart=20, K.max = 6, B = 500)
-gskmn
+simper_result <- simper(otu_simper, group = grouping_factor)
 
-gap_statistic_ordination = function(exord, FUNcluster, type="DiseaseStates", K.max=6, axes=c(1:2), B=500, verbose=interactive(), ...){
-  require("cluster")
-  #   If "pam1" was chosen, use this internally defined call to pam
-  if(FUNcluster == "pam1"){
-    FUNcluster = function(x,k) list(cluster = pam(x, k, cluster.only=TRUE))     
+# View summary of SIMPER results for specific comparisons (e.g., Group1 vs Group2)
+# Replace 'Group1' and 'Group2' with your actual group names
+# summary(simper_result, ordered = TRUE) # Shows all pairwise comparisons
+summary(simper_result, ordered = TRUE, digits = 3, rev.ord = TRUE) # Example for specific comparison
+names(simper_result)
+
+###FUNCTION###
+# A function to extract and prepare data for plotting for a single pair:
+prepare_simper_data <- function(simper_pair, pair_name) {
+  # The species names are stored in the row names
+  data_frame <- as.data.frame(simper_pair)
+  data_frame$species <- rownames(data_frame)
+  # Calculate cumulative percentage explicitly if needed for sorting in plot
+  data_frame <- data_frame %>%
+    arrange(desc(average)) %>% # Sort by contribution
+    mutate(cumul_contrib = cumsum(average / sum(average) * 100))
+  data_frame$pair <- pair_name
+  return(data_frame)
+}
+
+
+
+# Create directory for SIMPER plots (no warnings if it already exists)
+dir.create("simper_plots", showWarnings = FALSE)
+
+# Extract the list of comparisons from your SIMPER result
+comparisons <- names(simper_result)
+
+
+# Loop through each comparison
+# Create directory for SIMPER plots
+dir.create("simper_plots", showWarnings = FALSE)
+
+comparisons <- names(simper_result)
+
+for (comp in comparisons) {
+  comp_data <- summary(simper_result)[[comp]]
+  
+  # Filter to species contributing to first 90% cumulative contribution
+  comp_data_filtered <- comp_data[comp_data$cumsum < 0.90, ]
+  
+  # Skip if no species meet criteria
+  if(nrow(comp_data_filtered) == 0){
+    message(paste("Skipping comparison", comp, "- no species with cumsum < 0.90"))
+    next
   }
-  # Use the scores function to get the ordination coordinates
-  x = phyloseq:::scores.pcoa(exord, display=type)
-  #   If axes not explicitly defined (NULL), then use all of them
-  if(is.null(axes)){axes = 1:ncol(x)}
-  #   Finally, perform, and return, the gap statistic calculation using cluster::clusGap  
-  clusGap(x[, axes], FUN=FUNcluster, K.max=K.max, B=B, verbose=verbose, ...)
+  
+  # Contribution column
+  contrib_col <- "average"
+  
+  # Convert contribution to numeric (just in case)
+  comp_data_filtered[[contrib_col]] <- as.numeric(as.character(comp_data_filtered[[contrib_col]]))
+  
+  # Reorder by decreasing contribution
+  ord <- order(comp_data_filtered[[contrib_col]], decreasing = TRUE)
+  comp_data_filtered <- comp_data_filtered[ord, ]
+  
+  species_names <- rownames(comp_data_filtered)
+  filename <- paste0("simper_plots/plot_", comp, ".png")
+  
+  # Open PNG device
+  png(filename, width = 800, height = 600)
+  par(mar = c(10, 4, 4, 2) + 0.1)
+  
+  # Create bar plot
+  barplot(comp_data_filtered[[contrib_col]],
+          names.arg = species_names,
+          las = 2,
+          ylab = "Contribution (average)",
+          main = paste("Species Contribution for Comparison:", comp),
+          sub = "Species ordered by decreasing contribution")
+  
+  # Optional mean line
+  abline(h = mean(comp_data_filtered[[contrib_col]]), col = "red", lty = 2)
+  
+  # Close device
+  dev.off()
 }
 
-#Now we can plot it.
-plot_clusgap = function(gap_statistic_ordination, title="Gap Statistic calculation results"){
-  require("ggplot2")
-  gstab = data.frame(gap_statistic_ordination$Tab, k=1:nrow(gap_statistic_ordination$Tab))
-  p = ggplot(gstab, aes(k, gap)) + geom_line() + geom_point(size=5)
-  p = p + geom_errorbar(aes(ymax=gap+SE.sim, ymin=gap-SE.sim))
-  p = p + ggtitle(title)
-  return(p)
+print("Plots saved in the 'simper_plots' directory")
+
+
+comp_data <- summary(simper_result)[[comparisons[1]]]
+str(comp_data)
+head(comp_data)
+
+#Richness plots of target taxa
+install.packages("ggpubr")
+library(ggpubr)
+
+physeq_rel  = transform_sample_counts(physeq_object, function(x) x / sum(x) )
+physeq_rel_df<-psmelt(physeq_rel)
+
+blasto<-subset_taxa(physeq_rel, Genus=="Blastopirellula")
+rhodo<-subset_taxa(physeq_rel, Order=="Rhodobacterales")
+alpha<-subset_taxa(physeq_rel, Class=="Alphaproteobacteria")
+planc<-subset_taxa(physeq_rel, Class=="Planctomycetes")
+pseudoalt<-subset_taxa(physeq_rel, Genus=="Pseudoalteromonas")
+gamma<-subset_taxa(physeq_rel, Class=="Gammaproteobacteria")
+
+custom.colors <- function(n) {
+  palette <- c("dodgerblue1", "skyblue4", "chocolate1", "seagreen4",
+               "bisque3", "red4", "purple4", "mediumpurple3",
+               "maroon", "dodgerblue4", "skyblue2", "darkcyan",
+               "darkslategray3", "lightgreen", "bisque",
+               "palevioletred1", "black", "gray79", "lightsalmon4",
+               "darkgoldenrod1")
+  if (n > length(palette))
+    warning('palette has duplicated colours')
+  rep(palette, length.out=n)
 }
 
-gs = gap_statistic_ordination(exord, "pam1", B=50, verbose=FALSE)
+options(ggplot2.discrete.colour = c("red", "#af01ef"))
+options(ggplot2.discrete.colour= list(c("red", "#af01ef"), custom.colors(99)))
+
+# Source - https://stackoverflow.com/a
+# Posted by jan-glx, modified by community. See post 'Timeline' for change history
+# Retrieved 2025-11-11, License - CC BY-SA 4.0
+
+# `custom.colors` defined as in question
+scale_custom <- function(aesthetics, scale_name= "custom", ..., palette = custom.colors) discrete_scale(aesthetics = aesthetics, scale_name, ..., palette = palette)
+scale_colour_custom <- function(...) scale_custom("colour", ...)
+options(ggplot2.discrete.colour = scale_colour_custom)
 
 
 
-phylum_colors <- c( "#E69F00", "#56B4E9",  "#0072B2", "#D55E00","#009E73","#F0E442","#999999", "#000000","#CC79A7","#CBD588", "#5F7FC7", "orange","#DA5724", "#508578", "#CD9BCD",
-                    "#AD6F3B", "#673770","#D14285", "#652926", "#C84248", 
-                    "#8569D5", "#5E738F","#D1A33D", "#8A7C64", "#599861")
+title="Relative Abundance of Blastopirellula Across Disease States"
+bar_blasto<-plot_bar(blasto, "Description","Abundance", title=title)
+bar_blasto
+ggsave(bar_blasto, file="bar_blasto.png")
 
-colors <-c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "#000000", 
-  "#E41A1C", "#377EB8", "#4DAF4A", "#FF7F00", "#FFFF33", "#A65628", "#F781BF", "#999999", 
-  "#66C2A5", "#FC8D62", "#8DA0CB", "#E78AC3", "#A6D854", "#FF0000", "#F1F1F1", "#C2B0D0", 
-  "#7D92A2", "#AB5C5B", "#9BCE61", "#F8A1C0", "#FEFF00", "#1F78B4", "#33A02C", "#FF00FF", 
-  "#FF4C3B", "#4E79A7", "#F4A82A", "#D8BFD8", "#E6B3B1", "#A9D08E", "#FF6F91", "#D2D2D2", 
-  "#ADFF2F", "#BFD8D2", "#F5A623", "#8B0000", "#A52A2A", "#0D98BA", "#8C9E91", "#D50000", 
-  "#4A90E2", "#11C0FF", "#0A7D8C", "#B9E5FF", "#48C9B0", "#79C7B2", "#A3E4D7", "#7F5C81", 
-  "#2E7D32", "#003C73", "#F1C6E7", "#1D96B0", "#C1E6FC","#599861", "#CC5A53", "#E5E1E6", "#5A3C5E", 
-  "#FAE5D3", "#5D4080", "#003366", "#CA3E8F", "#A0E0A4", "#F2BB77", "#3F51B5", "#D6DAFF")
-ps1_gg <- ps1_rel %>%
-  tax_glom(taxrank = "Genus") %>%                     # agglomerate at phylum level
-  psmelt() %>%                                         # Melt to long format
-  filter(Abundance > 0.02) %>%                         # Filter out low abundance taxa
-  arrange(Genus)                                      # Sort data frame alphabetically by phylum
+title2="Relative Abundance of Rhodobacterales Across Disease States"
+bar_rhodo<-plot_bar(rhodo, "Description","Abundance", "Genus", title=title2) + scale_fill_viridis_d()
+bar_rhodo
+ggsave(bar_rhodo, file="bar_rhodo.png")
 
-barplot<-ggplot(ps1_gg, aes(x ="DiseaseState", y = Abundance, fill = Phylum)) + 
-  geom_bar(stat = "identity") +
-  scale_fill_manual(values = colors) +
-  theme(axis.text.x = element_text(angle=270, hjust=1,size=18))+
-  theme(axis.text.y = element_text(size=24))+
-  theme(legend.text=element_text(size=18),legend.title=element_text(size=24))+
-  theme(strip.text.x = element_text(size = 26))+
-  theme(axis.text=element_text(size=24),axis.title=element_text(size=24))+
-  guides(fill = guide_legend(reverse = TRUE, keywidth = 1, keyheight = 1)) +
-  ylab("Abundance \n") +
-  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
-        panel.background = element_blank(), axis.line = element_line(colour = "black"))
+title3="Relative Abundance of Alphaproteobacteria Across Disease States"
+bar_alpha<-plot_bar(alpha, "Description","Abundance", "Family", title=title3) + scale_fill_viridis_d(direction=-1)
+bar_alpha
+ggsave(bar_alpha, file="alphaprot.png")
 
+title4="Relative Abundance of Planctomycetaceae Across Disease States"
+bar_planc<-plot_bar(planc, "Description","Abundance", "Genus", title=title4) + scale_fill_viridis_d()
+bar_planc
+ggsave(bar_planc, file="planctomycet.png")
 
+title5="Relative Abundance of Pseudoalternomonas Across Disease States"
+bar_pseudoalt<-plot_bar(pseudoalt, "Description","Abundance", "Genus", title=title5) + scale_fill_viridis_d()
+bar_pseudoalt
+ggsave(bar_pseudoalt, file="pseudoalt.png")
 
+title6="Relative Abundance of Gammaproteobacteria Across Disease States"
+bar_gamma<-plot_bar(gamma, "Description","Abundance", "Genus", title=title6) + scale_fill_viridis_d()
+bar_gamma
+ggsave(bar_gamma, file="gamma.png")
+
+kruskal_results<-list()
+
+Blastopirellula <-c("Blastopirellula")
+
+for (taxon in Blastopirellula) {
+  formulat_str <-paste(taxon, "~DiseaseState")
+  kruskal_test_result <- kruskal.test(as.formula(formula_str), data = physeq_rel_df)
+  kruskal_results[[taxon]] <-kruskal_test_result$p.value
+}
+  
+}

@@ -44,10 +44,12 @@ BiocManager::install("biomformat",force=TRUE)
 library(biomformat)
 ```
 
-
 ```{r}
-#I did a local install from source onto my computer. You may not need this.
-library("phyloseq")
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("phyloseq",force=TRUE)
+
 ```
 
 ```{r}
@@ -77,7 +79,7 @@ library(qiime2R)
 
 ```{r}
 list.files()
-ASVs<-read_qza("xesto_reads/denoise/rel_freq_table.qza")
+ASVs<-read_qza("xesto_reads/denoise/table.qza")
 names(ASVs)
 ASVs$data[1:5,1:5]
 ASVs$type
